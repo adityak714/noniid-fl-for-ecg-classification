@@ -33,7 +33,7 @@ from flwr.server.strategy import Strategy
 #from hydra.utils import instantiate
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
-from flwr.serverapp.strategy import FedAvg
+from flwr.server.strategy import FedAvg
 from pytorchexample.task import test
 from pytorchexample.resnet import ResNet1d
 
@@ -110,7 +110,7 @@ class ScaffoldServer(Server):
         self.model_params = ResNet1d(n_classes=1)
         self.server_cv: List[torch.Tensor] = []
 
-    def _get_initial_parameters(self, timeout: Optional[float]) -> Parameters:
+    def _get_initial_parameters(self, server_round: int, timeout: Optional[float]) -> Parameters:
         """Get initial parameters from one of the available clients."""
         # Server-side parameter initialization
         parameters: Optional[Parameters] = self.strategy.initialize_parameters(
