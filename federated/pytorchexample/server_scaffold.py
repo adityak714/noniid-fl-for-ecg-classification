@@ -178,11 +178,13 @@ class ScaffoldServer(Server):
             self.strategy.aggregate_fit(server_round, results, failures)
         )
 
-        aggregated_result_arrays_combined = []
-        if aggregated_result[0] is not None:
-            aggregated_result_arrays_combined = parameters_to_ndarrays(
-                aggregated_result[0]
-            )
+        #aggregated_result_arrays_combined = []
+        if aggregated_result[0] is None:
+            return None
+        
+        aggregated_result_arrays_combined = parameters_to_ndarrays(
+            aggregated_result[0]
+        )
         aggregated_parameters = aggregated_result_arrays_combined[
             : len(aggregated_result_arrays_combined) // 2
         ]

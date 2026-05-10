@@ -45,6 +45,17 @@ class FlowerClientScaffold(fl.client.NumPyClient):
         # initialize client control variate with 0 and shape of the network parameters
         self.client_cv = []
         
+        # load_datasets
+        trainloader, valloader = load_datasets(
+            self.cid, 
+            self.num_partitions, 
+            self.batch_size,
+            partitioning="dirichlet",
+            val=self.val, device=self.device
+        )
+        self.trainloader = trainloader
+        self.valloader = valloader
+        
         for param in self.net.parameters():
             self.client_cv.append(torch.zeros(param.shape))
         # save cv to directory
@@ -60,8 +71,19 @@ class FlowerClientScaffold(fl.client.NumPyClient):
 
     def set_parameters(self, parameters):
         """Set the local model parameters using given ones."""
-        params_dict = zip(self.net.state_dict().keys(), parameters)
-        state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
+        #params_dict = zip(self.net.state_dict().keys(), parameters)
+        #state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
+        key_list = list(self.net.state_dict().keys())
+        if len(parameters) != len(key_list):
+            raise ValueError(f"Expected {len(key_list)} parameter arrays but got {len(parameters)}")
+
+        state_dict = OrderedDict()
+        for key, param in zip(key_list, parameters):
+            if isinstance(param, torch.Tensor):
+                state_dict[key] = param
+            else:
+                state_dict[key] = torch.as_tensor(param)
+
         self.net.load_state_dict(state_dict, strict=True)
 
     def fit(self, parameters, config: Dict[str, Scalar]):
@@ -79,23 +101,14 @@ class FlowerClientScaffold(fl.client.NumPyClient):
         # convert the server control variate to a list of tensors
         server_cv = [torch.Tensor(cv) for cv in server_cv]
 
-        # load_datasets
-        trainloader, valloader = load_datasets(
-            self.cid, 
-            self.num_partitions, 
-            self.batch_size,
-            partitioning="dirichlet",
-            val=self.val, device=self.device
-        )
-        
         train_scaffold({
                 "net": self.net,
                 "partition_id": self.cid,
-                "trainloader": trainloader,
-                "valloader": valloader,
-                "epochs": context.run_config["local-epochs"], 
-                "lr": msg.content["config"]["lr"], 
-                "batch_size": context.run_config["batch-size"]
+                "trainloader": self.trainloader,
+                "valloader": self.valloader,
+                "epochs": self.num_epochs, 
+                "lr": self.learning_rate, 
+                "batch_size": self.batch_size
             },
             server_cv,
             self.client_cv,

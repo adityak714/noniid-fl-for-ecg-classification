@@ -1,6 +1,7 @@
 """pytorchexample: A Flower / PyTorch app."""
 
-import flwr, torch, os, uuid, json, glob, h5py, numpy as np, pandas as pd
+import flwr, torch, os, uuid, json, glob, h5py, pickle
+import numpy as np, pandas as pd
 from matplotlib import pyplot as plt
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord
 from flwr.serverapp import Grid, ServerApp
