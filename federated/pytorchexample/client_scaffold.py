@@ -99,7 +99,7 @@ class FlowerClientScaffold(fl.client.NumPyClient):
             val=self.val, device=self.device
         )
 
-        print("[client] starting train_scaffold with batches")
+        print(f"[client {self.cid}] starting train_scaffold with batches {len(trainloader)}")
         train_scaffold({
                 "net": self.net,
                 "partition_id": self.cid,
@@ -118,17 +118,19 @@ class FlowerClientScaffold(fl.client.NumPyClient):
         c_i_n = []
         server_update_x = []
         server_update_c = []
+
         # update client control variate c_i_1 = c_i - c + 1/eta*K (x - y_i)
         for c_i_j, c_j, x_j, y_i_j in zip(self.client_cv, server_cv, x, y_i):
+            #print(c_i_j.device, c_j.device)
             c_i_n.append(
-                c_i_j
-                - c_j
-                + (1.0 / (self.learning_rate * self.num_epochs * len(self.trainloader)))
+                c_i_j.cpu()
+                - c_j.cpu()
+                + (1.0 / (self.learning_rate * self.num_epochs * len(trainloader)))
                 * (x_j - y_i_j)
             )
             # y_i - x, c_i_n - c_i for the server
             server_update_x.append((y_i_j - x_j))
-            server_update_c.append((c_i_n[-1] - c_i_j).cpu().numpy())
+            server_update_c.append((c_i_n[-1] - c_i_j.cpu()).cpu().numpy())
         self.client_cv = c_i_n
         torch.save(self.client_cv, f"{self.dir}/client_cv_{self.cid}.pt")
 
@@ -136,7 +138,7 @@ class FlowerClientScaffold(fl.client.NumPyClient):
 
         return (
             combined_updates,
-            len(self.trainloader.dataset),
+            len(trainloader.dataset),
             {},
         )
 

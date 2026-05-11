@@ -27,7 +27,7 @@ def main() -> None:
     # Read run config
     num_partitions: int = 10 #context.run_config["num-partitions"]
     fraction_evaluate: float = 0.5 #context.run_config["fraction-evaluate"]
-    num_rounds: int = 1 #context.run_config["num-server-rounds"]
+    num_rounds: int = 20 #context.run_config["num-server-rounds"]
     lr: float = 0.0001 #context.run_config["learning-rate"]
     batch_size: int = 256 #context.run_config["batch-size"]
     stratname = "scaffold" #context.run_config["strategy"]
@@ -106,10 +106,10 @@ def main() -> None:
  
 
 def scaffold_global_evaluate(server_round: int, parameters, config):
-    model = ResNet1d(n_classes=1)
     #params_dict = zip(model.state_dict().keys(), [torch.as_tensor(p) for p in parameters])
     #state_dict = OrderedDict({k: v for k, v in params_dict})
     #model.load_state_dict(state_dict, strict=True)
+    model = ResNet1d(n_classes=1)
     with torch.no_grad():
         for param, array in zip(model.parameters(), parameters):
             param.copy_(torch.as_tensor(array))
@@ -119,6 +119,41 @@ def scaffold_global_evaluate(server_round: int, parameters, config):
 
     test_dataloader = load_centralized_dataset()
     loss, acc = test(model, test_dataloader, device)
+
+    model.eval()
+    scores = {}
+    for i, filepath in enumerate(glob.glob("../data/code-test/annotations/*.csv")):
+        if "gold_standard" in filepath:
+            f = h5py.File("../data/code-test/ecg_tracings.hdf5", 'r')
+            traces = torch.tensor(np.array(f['tracings'], dtype=np.float32), dtype=torch.float32, device=device)
+            y_trues = torch.tensor(pd.read_csv(filepath)["AF"], dtype=torch.float16).reshape(-1,1)
+            
+            test_subset = filepath.replace("../data/code-test/annotations/", "").replace(".csv", "")
+            # Run forward pass
+            with torch.no_grad():
+                y_preds = model(traces).cpu().numpy()
+            
+            PrecisionRecallDisplay.from_predictions(y_trues, y_preds)
+            score = average_precision_score(y_trues, y_preds)
+            plt.title(f"PR-Curve on Annotated ECG Dataset - {test_subset}.png")
+            plt.savefig(f"runs/{today}-{unique_id}/prCODEtest-{test_subset}.png", dpi=300)
+            plt.close()
+            
+            # add to dictionary storing all holdout scores
+            scores[test_subset] = score
+
+    with open(f'runs/{today}-{unique_id}/holdoutmetrics-CODETEST.txt', 'a') as f:
+        f.write(f"{scores}\n")
+
+    torch.save({
+        "MODEL_STATE": arrays.to_torch_state_dict(),
+        "COMM_ROUND": server_round
+    }, f'runs/{today}-{unique_id}/fl-globmod-snapshot.pt')
+
+    record = MetricRecord({"comm_round": server_round, "serveragg_avg_prec": test_acc, "serveragg_loss": test_loss})
+    with open(f'runs/{today}-{unique_id}/serveragg-metrics.txt', 'a') as f:
+        f.write(f"{dict(record)}\n") 
+    
     return float(loss), {"accuracy": float(acc)}
 
 def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:

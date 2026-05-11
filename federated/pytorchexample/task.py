@@ -32,7 +32,7 @@ class ScaffoldOptimizer(SGD):
         self.step()
         for group in self.param_groups:
             for par, s_cv, c_cv in zip(group["params"], server_cv, client_cv):
-                print(par.size(), s_cv.size(), c_cv.size())
+                #print(par.size(), s_cv.size(), c_cv.size())
                 par.data.add_(s_cv.to(par.device) - c_cv.to(par.device), alpha=-group["lr"])
 
 def load_centralized_dataset():
