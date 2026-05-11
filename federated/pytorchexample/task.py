@@ -32,7 +32,8 @@ class ScaffoldOptimizer(SGD):
         self.step()
         for group in self.param_groups:
             for par, s_cv, c_cv in zip(group["params"], server_cv, client_cv):
-                par.data.add_(s_cv - c_cv, alpha=-group["lr"])
+                print(par.size(), s_cv.size(), c_cv.size())
+                par.data.add_(s_cv.to(par.device) - c_cv.to(par.device), alpha=-group["lr"])
 
 def load_centralized_dataset():
     """Load entire test set (selected to be exams_part0, exams_part1, 2 and 3) and return the dataloader."""
@@ -260,119 +261,6 @@ def load_datasets(partition_id: int, num_partitions: int, batch_size: int, parti
             batch_size=batch_size, 
             shuffle=False
         )
-    elif partitioning == "iid":  # sim_iid_non_iid -> dirichl_iid_non_iid
-        similarity = val
-        if similarity > 1.0 or similarity < 0.1:
-            raise ValueError("Invalid value", val, "for partitioning =", partitioning)
-
-        trainsets_per_client = []
-
-        # for s% similarity sample iid data per client
-        s_fraction = int(similarity * len(trains))
-        prng = np.random.default_rng(seed)
-        iid_idxs = prng.choice(len(trains), s_fraction, replace=False)
-        rem_idxs = np.setdiff1d(np.arange(len(trains)), iid_idxs)
-        iid_trainset = Subset(trains, iid_idxs) # = trainset[iid_idxs] s*idxs
-        rem_trainset = Subset(trains, rem_idxs) # = trainset[rem_idxs] (1-s)*idxs
-        # s*idxs + (1-s)*idxs = len(trainset)
-
-        all_ids = np.arange(len(iid_trainset))
-        splits = np.array_split(all_ids, num_partitions)
-        for i in range(num_partitions):
-            c_ids = splits[i]
-            d_ids = iid_trainset.indices[c_ids]
-            trainsets_per_client.append(Subset(iid_trainset.dataset, d_ids))
-
-        if similarity == 1.0:
-            ages = [[] for i in range(num_partitions)]
-            for i in range(num_partitions):
-                for x,y in trainsets_per_client[i]:
-                    ages[i].append(y[1].numpy())
-                ages[i] = np.array(ages[i]).flatten()
-
-            import pickle
-            with open(f'clients{num_partitions}-sim{similarity}.pkl', 'wb') as f:
-                pickle.dump(ages, f)
-
-            return DataLoader(
-                trainsets_per_client[partition_id], 
-                batch_size=batch_size, 
-                shuffle=False
-            ), DataLoader(
-                testset, 
-                batch_size=batch_size, 
-                shuffle=False
-            )
-
-        tmp_t = [item[1].cpu() for item in rem_trainset] # rem_trainset.dataset.targets
-        if isinstance(tmp_t, list):
-            tmp_t = np.array(tmp_t)
-        if isinstance(tmp_t, torch.Tensor):
-            tmp_t = tmp_t.numpy()
-
-        targets = tmp_t[rem_trainset.indices,1].flatten() # shape: 1d (N,)
-        bins = pd.cut(targets, [10, 20, 30, 40, 50, 60, 70, 80])
-        remaining_classes = list(set(bins))
-        remaining_classes.remove(np.nan)
-        num_remaining_classes = len(remaining_classes) # should be 7 ... 10-20, 20-30, ... 70-80 (7 age groups)
-
-        client_classes: List[List] = [[] for _ in range(num_partitions)]
-        times = np.zeros(num_remaining_classes)
-
-        for i in range(num_partitions): # partition = client
-            client_classes[i] = [remaining_classes[i % num_remaining_classes]]
-            times[i % num_remaining_classes] += 1
-            j = 1
-            while j < 2:
-                index = prng.choice(num_remaining_classes)
-                class_t = remaining_classes[index]
-                if class_t not in client_classes[i]:
-                    client_classes[i].append(class_t)
-                    times[index] += 1
-                    j += 1
-
-        rem_trainsets_per_client: List[List] = [[] for _ in range(num_partitions)]
-
-        for i in range(num_remaining_classes): # data partition not the same as 
-            class_t = remaining_classes[i]
-            idx_k = [] # this is supposed to be indices, so taking i through enumerate(targets)
-            for j, label in enumerate(targets):
-                if label in class_t:
-                    idx_k.append(j)
-            prng.shuffle(idx_k)
-            idx_k_split = np.array_split(idx_k, times[i])
-            ids = 0
-            for j in range(num_partitions):
-                if class_t in client_classes[j]:
-                    act_idx = rem_trainset.indices[idx_k_split[ids]]
-                    rem_trainsets_per_client[j].append(
-                        Subset(rem_trainset.dataset, act_idx)
-                    )
-                    ids += 1
-
-        for i in range(num_partitions):
-            trainsets_per_client[i] = ConcatDataset([trainsets_per_client[i]] + rem_trainsets_per_client[i])
-
-        ages = [[] for i in range(num_partitions)]
-        for i in range(num_partitions):
-            for x,y in trainsets_per_client[i]:
-                ages[i].append(y[1].numpy())
-            ages[i] = np.array(ages[i]).flatten()
-        import pickle
-        with open(f'clients{num_partitions}-sim{similarity}.pkl', 'wb') as f:
-            pickle.dump(ages, f)
-
-        #sys.exit(0)
-        
-        return DataLoader(
-            trainsets_per_client[partition_id], 
-            batch_size=batch_size, 
-            shuffle=False
-        ), DataLoader(
-            testset, 
-            batch_size=batch_size, 
-            shuffle=False
-        )
     else: # if any other partitioning strategy given that is not implemented here >>
         raise NotImplementedError
 
@@ -525,26 +413,27 @@ def _train_one_epoch_scaffold(
 ) -> nn.Module:
     # pylint: disable=too-many-arguments
     """Train the network on the training set for one epoch."""
+    print("In train_one_epoch_scaffold ...")
     net.to(device)
     tqdm.write("Training model...")
     train_pbar = tqdm(trainloader, desc="Training SCAFFOLD ...", leave=True)
     total_loss, n_entries = 0, 0
 
     net.train()
-    #for traces, diagnoses in train_pbar:
-    #    traces, diagnoses = traces.to(device), diagnoses.to(device)
-    for x, y in trainloader:
-        x, y = x.to(device), y[:,0].reshape(-1,1).to(device)
-        optimizer.zero_grad()
-        pred = net(x)
-        curr_loss = criterion(pred, y)
-        curr_loss.backward()
-        optimizer.step_custom(server_cv, client_cv)
-        
+    for traces, diagnoses in train_pbar:
+        traces, diagnoses = traces.to(device), diagnoses.to(device)
+        for x, y in trainloader:
+            x, y = x.to(device), y[:,0].reshape(-1,1).to(device)
+            optimizer.zero_grad()
+            pred = net(x)
+            curr_loss = criterion(pred, y)
+            curr_loss.backward()
+            optimizer.step_custom(server_cv, client_cv)
+            
         total_loss += curr_loss.detach().cpu().numpy()
         n_entries += len(x)
         
-        #train_pbar.set_postfix({'loss': total_loss/n_entries})
-        #train_pbar.close()
+        train_pbar.set_postfix({'loss': total_loss/n_entries})
+    train_pbar.close()
 
     return float(total_loss/n_entries), net

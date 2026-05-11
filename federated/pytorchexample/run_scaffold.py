@@ -92,8 +92,8 @@ def main() -> None:
             num_clients=num_partitions,
             config=flwr.server.ServerConfig(num_rounds=num_rounds),
             client_resources={
-                "num_cpus": 1,
-                "num_gpus": 0.0,
+                "num_cpus": 64,
+                "num_gpus": 1.0,
             },
             strategy=strategy,
             ray_init_args={
@@ -107,10 +107,13 @@ def main() -> None:
 
 def scaffold_global_evaluate(server_round: int, parameters, config):
     model = ResNet1d(n_classes=1)
-    params_dict = zip(model.state_dict().keys(), [torch.as_tensor(p) for p in parameters])
-    state_dict = OrderedDict({k: v for k, v in params_dict})
-    model.load_state_dict(state_dict, strict=True)
-
+    #params_dict = zip(model.state_dict().keys(), [torch.as_tensor(p) for p in parameters])
+    #state_dict = OrderedDict({k: v for k, v in params_dict})
+    #model.load_state_dict(state_dict, strict=True)
+    with torch.no_grad():
+        for param, array in zip(model.parameters(), parameters):
+            param.copy_(torch.as_tensor(array))
+    
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 

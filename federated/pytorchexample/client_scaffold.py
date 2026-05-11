@@ -57,27 +57,23 @@ class FlowerClientScaffold(fl.client.NumPyClient):
         self.dir = save_dir
         if not os.path.exists(self.dir):
             os.makedirs(self.dir)
-
+    
     def get_parameters(self, config: Dict[str, Scalar]):
         """Return the current local model parameters."""
-        return [val.cpu().numpy() for _, val in self.net.state_dict().items()]
+        return [val.detach().cpu().numpy() for val in self.net.parameters()]
 
     def set_parameters(self, parameters):
         """Set the local model parameters using given ones."""
-        #params_dict = zip(self.net.state_dict().keys(), parameters)
+        #params_dict = zip(list(self.net.state_dict().keys()), parameters)
         #state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
-        key_list = list(self.net.state_dict().keys())
-        if len(parameters) != len(key_list):
-            raise ValueError(f"Expected {len(key_list)} parameter arrays but got {len(parameters)}")
-
-        state_dict = OrderedDict()
-        for key, param in zip(key_list, parameters):
-            if isinstance(param, torch.Tensor):
-                state_dict[key] = param
-            else:
-                state_dict[key] = torch.as_tensor(param)
-
-        self.net.load_state_dict(state_dict, strict=True)
+        params_list = list(self.net.parameters())
+        if len(parameters) != len(params_list):
+            raise ValueError(f"Expected {len(params_list)} but got {len(parameters)}")
+        
+        with torch.no_grad():
+            for i, param in enumerate(params_list):
+                param.copy_(torch.as_tensor(parameters[i]).to(param.device))
+        #self.net.load_state_dict(state_dict, strict=True)
 
     def fit(self, parameters, config: Dict[str, Scalar]):
         """Implement distributed fit function for a given client for SCAFFOLD."""
@@ -93,13 +89,22 @@ class FlowerClientScaffold(fl.client.NumPyClient):
             self.client_cv = torch.load(f"{self.dir}/client_cv_{self.cid}.pt")
         # convert the server control variate to a list of tensors
         server_cv = [torch.Tensor(cv) for cv in server_cv]
- 
-        print(f"[client {self.cid}] starting train_scaffold with {len(trainloader)} batches")
+
+        print(self.cid)
+        trainloader, valloader = load_datasets(
+            self.cid, 
+            self.num_partitions, 
+            self.batch_size,
+            partitioning="dirichlet",
+            val=self.val, device=self.device
+        )
+
+        print("[client] starting train_scaffold with batches")
         train_scaffold({
                 "net": self.net,
                 "partition_id": self.cid,
-                "trainloader": self.trainloader,
-                "valloader": self.valloader,
+                "trainloader": trainloader,
+                "valloader": valloader,
                 "epochs": self.num_epochs, 
                 "lr": self.learning_rate, 
                 "batch_size": self.batch_size

@@ -1,8 +1,7 @@
 """Server class for SCAFFOLD."""
 
-import concurrent.futures
 from logging import DEBUG, INFO
-from typing import OrderedDict
+from typing import Callable, Dict, List, Optional, OrderedDict, Tuple, Union
 
 import torch
 from flwr.common import (
@@ -14,27 +13,17 @@ from flwr.common import (
     ndarrays_to_parameters,
     parameters_to_ndarrays,
 )
-from flwr.server.strategy.aggregate import aggregate
 from flwr.common.logger import log
-from typing import Dict, List, Union, Optional, Tuple
-from flwr.common.typing import (
-    Callable,
-#    Dict,
-    GetParametersIns,
-#    List,
-    NDArrays,
-#    Optional,
-#    Tuple,
-#    Union,
-)
+from flwr.common.typing import GetParametersIns, NDArrays
 from flwr.server import Server
 from flwr.server.client_manager import ClientManager, SimpleClientManager
 from flwr.server.client_proxy import ClientProxy
+from flwr.server.server import fit_clients
 from flwr.server.strategy import Strategy
-#from hydra.utils import instantiate
+from flwr.server.strategy import FedAvg
+from flwr.server.strategy.aggregate import aggregate
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
-from flwr.server.strategy import FedAvg
 from pytorchexample.task import test
 from pytorchexample.resnet import ResNet1d
 
@@ -129,8 +118,14 @@ class ScaffoldServer(Server):
         log(INFO, "Requesting initial parameters from one random client")
         random_client = self._client_manager.sample(1)[0]
         ins = GetParametersIns(config={})
-        get_parameters_res = random_client.get_parameters(ins=ins, timeout=timeout, group_id=None)
-        log(INFO, "Received initial parameters from one random client")
+        get_parameters_res = random_client.get_parameters(
+            ins=ins, timeout=timeout, group_id=server_round
+        )
+        if get_parameters_res.status.code == Code.OK:
+            log(INFO, "Received initial parameters from one random client")
+        else:
+            log(INFO, "Failed to receive initial parameters from the client. Using empty initial parameters.")
+
         self.server_cv = [
             torch.zeros_like(torch.from_numpy(t))
             for t in parameters_to_ndarrays(get_parameters_res.parameters)
@@ -169,6 +164,7 @@ class ScaffoldServer(Server):
             client_instructions=client_instructions,
             max_workers=self.max_workers,
             timeout=timeout,
+            group_id=server_round,
         )
         log(
             DEBUG,
@@ -228,62 +224,3 @@ def update_parameters_with_cv(
     parameters_np = parameters_to_ndarrays(parameters)
     parameters_np.extend(cv_np)
     return ndarrays_to_parameters(parameters_np)
-
-
-def fit_clients(
-    client_instructions: List[Tuple[ClientProxy, FitIns]],
-    max_workers: Optional[int],
-    timeout: Optional[float],
-) -> FitResultsAndFailures:
-    """Refine parameters concurrently on all selected clients."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        submitted_fs = {
-            executor.submit(fit_client, client_proxy, ins, timeout)
-            for client_proxy, ins in client_instructions
-        }
-        finished_fs, _ = concurrent.futures.wait(
-            fs=submitted_fs,
-            timeout=None,  # Handled in the respective communication stack
-        )
-
-    # Gather results
-    results: List[Tuple[ClientProxy, FitRes]] = []
-    failures: List[Union[Tuple[ClientProxy, FitRes], BaseException]] = []
-    for future in finished_fs:
-        _handle_finished_future_after_fit(
-            future=future, results=results, failures=failures
-        )
-    return results, failures
-
-
-def fit_client(
-    client: ClientProxy, ins: FitIns, timeout: Optional[float]
-) -> Tuple[ClientProxy, FitRes]:
-    """Refine parameters on a single client."""
-    fit_res = client.fit(ins, timeout=timeout)
-    return client, fit_res
-
-
-def _handle_finished_future_after_fit(
-    future: concurrent.futures.Future,  # type: ignore
-    results: List[Tuple[ClientProxy, FitRes]],
-    failures: List[Union[Tuple[ClientProxy, FitRes], BaseException]],
-) -> None:
-    """Convert finished future into either a result or a failure."""
-    # Check if there was an exception
-    failure = future.exception()
-    if failure is not None:
-        failures.append(failure)
-        return
-
-    # Successfully received a result from a client
-    result: Tuple[ClientProxy, FitRes] = future.result()
-    _, res = result
-
-    # Check result status code
-    if res.status.code == Code.OK:
-        results.append(result)
-        return
-
-    # Not successful, client returned a result where the status code is not OK
-    failures.append(result)
