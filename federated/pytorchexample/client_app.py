@@ -1,6 +1,6 @@
 """pytorchexample: A Flower / PyTorch app."""
 
-import torch, time, os
+import torch, time, os, numpy as np
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 
@@ -24,6 +24,9 @@ def train(msg: Message, context: Context):
     model = ResNet1d(n_classes=1)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
 
+    # Construct and return reply Message
+    #print(f"Clients not participating in training: {drop_list}")
+
     # Call the training function
     start_time = time.time()
     train_loss, model, train_data_size = train_fn({
@@ -38,10 +41,8 @@ def train(msg: Message, context: Context):
         "proxmu": context.run_config["proxmu"] if context.run_config["strategy"] == 'fedprox' else 0.0
     })
     end_time = time.time()
-
     training_time = end_time - start_time
 
-    # Construct and return reply Message
     model_record = ArrayRecord(model.state_dict())
     metrics = {
         "train_loss": train_loss,
@@ -81,17 +82,21 @@ def evaluate(msg: Message, context: Context):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # Call the evaluation function
-    eval_loss, eval_acc = test_fn(model, valloader, device)
+    #print(f"Clients not participating in training: {drop_list}")
 
     # Construct and return reply Message
+    #if context.node_config["partition-id"] not in drop_list: 
+        # Call the evaluation function
+    eval_loss, eval_acc = test_fn(model, valloader, device)
     metrics = {
         "eval_loss": eval_loss,
         "eval_acc": eval_acc,
-        "num-examples": len(valloader.dataset),
+        "num-examples": len(valloader.dataset)
+        #"num-examples": len(valloader)
     }
     metric_record = MetricRecord(metrics)
     content = RecordDict({"metrics": metric_record})
+    
     today = date.today() #model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
 
     with open(f'{logloc}/clients{context.node_config["num-partitions"]}-partitioning{context.run_config["partitioning"]}{val}-commrounds{context.run_config["num-server-rounds"]}-loceps{context.run_config["local-epochs"]}.txt', "a") as logger:

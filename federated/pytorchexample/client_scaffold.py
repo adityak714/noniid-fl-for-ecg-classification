@@ -1,6 +1,6 @@
 """Defines the client class and support functions for SCAFFOLD."""
 
-import os
+import os, time
 from typing import Callable, Dict, List, OrderedDict
 
 import flwr as fl
@@ -82,15 +82,17 @@ class FlowerClientScaffold(fl.client.NumPyClient):
         parameters = parameters[: len(parameters) // 2]
         self.set_parameters(parameters)
         self.client_cv = []
-        for param in self.net.parameters():
-            self.client_cv.append(param.clone().detach())
+        #for param in self.net.parameters():
+        #    self.client_cv.append(param.clone().detach())
         # load client control variate
         if os.path.exists(f"{self.dir}/client_cv_{self.cid}.pt"):
             self.client_cv = torch.load(f"{self.dir}/client_cv_{self.cid}.pt")
+        else:
+            self.client_cv = [torch.zeros_like(param) for param in self.net.parameters()]
         # convert the server control variate to a list of tensors
         server_cv = [torch.Tensor(cv) for cv in server_cv]
 
-        print(self.cid)
+        #print(self.cid)
         trainloader, valloader = load_datasets(
             self.cid, 
             self.num_partitions, 
@@ -100,7 +102,8 @@ class FlowerClientScaffold(fl.client.NumPyClient):
         )
 
         print(f"[client {self.cid}] starting train_scaffold with batches {len(trainloader)}")
-        train_scaffold({
+        start_time = time.time()
+        train_loss, net, count = train_scaffold({
                 "net": self.net,
                 "partition_id": self.cid,
                 "trainloader": trainloader,
@@ -112,7 +115,10 @@ class FlowerClientScaffold(fl.client.NumPyClient):
             server_cv,
             self.client_cv,
         )
+        end_time = time.time()
+        training_time = end_time - start_time
         print("training done!")
+        
         x = parameters
         y_i = self.get_parameters(config={})
         c_i_n = []
@@ -136,6 +142,19 @@ class FlowerClientScaffold(fl.client.NumPyClient):
 
         combined_updates = server_update_x + server_update_c
 
+        metrics = {
+            "train_loss": train_loss,
+            "num-examples": len(trainloader.dataset),
+            "training_time": training_time,
+            "local-epochs": self.num_epochs,
+            "partition_id": self.cid
+        }
+        #metric_record = MetricRecord(metrics)
+        #content = RecordDict({"arrays": model_record, "metrics": metric_record})
+
+        with open(f'{self.dir}/clients{self.num_partitions}-partitioningdirichlet{self.val}-loceps{self.num_epochs}.txt', "a") as logger:
+            logger.write(f"{str(metrics)}\n")
+        
         return (
             combined_updates,
             len(trainloader.dataset),
@@ -157,6 +176,13 @@ class FlowerClientScaffold(fl.client.NumPyClient):
         self.valloader = valloader
 
         loss, acc = test(self.net, self.valloader, self.device)
+        metrics = {
+            "eval_loss": float(loss),
+            "eval_acc": float(acc),
+            "num-examples": len(self.valloader.dataset)
+        }
+        with open(f'{self.dir}/clients{self.num_partitions}-partitioningdirichlet{self.val}-loceps{self.num_epochs}.txt', "a") as logger:
+            logger.write(f"{str(metrics)}\n")
         return float(loss), len(self.valloader.dataset), {"accuracy": float(acc)}
 
 
@@ -170,7 +196,7 @@ def gen_client_fn(
     num_epochs: int,
     learning_rate: float,
     momentum: float = 0,
-    weight_decay: float = 0.01,
+    weight_decay: float = 0.0,
     ) -> Callable[[Context], fl.client.Client]:
     # -> Callable[[str], FlowerClientScaffold]:  
     # pylint: disable=too-many-arguments

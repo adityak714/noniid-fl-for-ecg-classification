@@ -56,46 +56,73 @@ def train_loop(epoch, chunk, dataloader, model, optimizer, loss_function, device
     total_loss = 0  # accumulated loss
     n_entries = 0   # accumulated number of data points
     # progress bar def
-    train_pbar = tqdm(dataloader, desc="Training Epoch {epoch:2d} Chunk {chunk}".format(epoch=epoch, chunk=chunk), leave=True)
-
+    train_pbar = tqdm(
+        initial=0, total=len(dataloader), 
+        desc="Training Epoch {epoch:2d} - Loss: {total_loss:.5f}".format(epoch=epoch, total_loss=total_loss), 
+        leave=True
+    )
     sigmoid = torch.nn.Sigmoid().to(device)
-    # training loop
-    for i, (traces, diagnoses) in enumerate(train_pbar):
-        traces, diagnoses = traces.to(device), diagnoses.to(device)
+
+    """
+    for x, y in trainloader:
+        x, y = x.to(rank), y[:,0].reshape(-1,1).to(rank)
+        pred = net(x)
+        ####### DEPENDING ON IF FEDAVG OR FEDPROX #######
+        if global_params is not None: ### FEDPROX
+            proximal_term = 0.0
+            for local_weights, global_weights in zip(net.parameters(), global_params, strict=True):
+                proximal_term += torch.square((local_weights - global_weights.to(local_weights.device)).norm(2))
+                
+            curr_loss = criterion(pred, y) + (proximal_mu / 2) * proximal_term
+        else:                         ### FEDAVG
+            curr_loss = criterion(pred, y)
         
-        # data to device (CPU or GPU if available)
-        for j, (x,y) in enumerate(dataloader):
-            x, y = x.to(device), y.to(device)
-            pred = model(x)
-            curr_loss = loss_function(pred, y)
-            curr_loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+        curr_loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        
+        total_loss += curr_loss.detach().cpu().numpy()
+        n_entries += 1
+        #n_entries += len(traces)
+
+        train_pbar.desc = "Training Epoch {epoch:2d} - Loss: {total_loss:.5f}".format(epoch=epoch, total_loss=total_loss/n_entries)
+        train_pbar.update(1)
+    train_pbar.close()
+    """
+    
+    # data to device (CPU or GPU if available)
+    for j, (x,y) in enumerate(dataloader):
+        x, y = x.to(device), y[:,0].reshape(-1,1).to(device)
+        pred = model(x)
+        curr_loss = loss_function(pred, y)
+        curr_loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
 
         # Update accumulated values
         total_loss += curr_loss.detach().cpu().numpy()
-        n_entries += len(traces)
-
+        n_entries += 1
+    
         # Update progress bar
-        train_pbar.set_postfix({'loss': total_loss / n_entries})
+        train_pbar.desc = "Training Epoch {epoch:2d} - Loss: {total_loss:.5f}".format(epoch=epoch, total_loss=total_loss/n_entries)
+        train_pbar.update(1)
     train_pbar.close()
     return total_loss / n_entries
 
 def eval_loop(epoch, chunk, dataloader, model, loss_function, device):
     # model to evaluation mode (important to correctly handle dropout or batchnorm layers)
     model.eval()
-    y_trues, y_preds = [], []
     
+    y_trues, y_preds = [], []
     # allocation
     total_loss = 0  # accumulated loss
     n_entries = 0   # accumulated number of data points
-    avg_precisions = []  # avg precision (pr-auc)
-    roc_aucs = [] # roc_auc
+    ap = 0
 
-    # progress bar def
-    eval_pbar = tqdm(dataloader, desc="Evaluation Epoch {epoch:2d} Chunk {chunk:2d}".format(epoch=epoch, chunk=chunk), leave=True)
+    # sigmoid function
     sigmoid = torch.nn.Sigmoid().to(device)
     # evaluation loop
+    """
     for traces_cpu, diagnoses_cpu in eval_pbar:
         # data to device (CPU or GPU if available)
         traces, diagnoses = traces_cpu.to(device), diagnoses_cpu.to(device)
@@ -126,7 +153,27 @@ def eval_loop(epoch, chunk, dataloader, model, loss_function, device):
                 'roc_auc': np.mean(roc_aucs)
             })
     eval_pbar.close()
-    return y_trues, y_preds, total_loss / n_entries, np.mean(avg_precisions), np.mean(roc_aucs)
+    """
+    with torch.no_grad():
+        for data, target in dataloader:
+            #assert not isinstance(data, str), "FAULTY DATALOADER ... Check your data loading."
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            total_loss += loss_function(output, target).item()
+            n_entries += 1
+            
+            y_trues.append(target.cpu())
+            y_preds.append(sigmoid(output).cpu())
+    
+    y_trues = torch.cat(y_trues).numpy()
+    y_preds = torch.cat(y_preds).numpy()
+
+    ap = average_precision_score(y_trues, y_preds)
+    roc_auc = roc_auc_score(y_trues, y_preds)
+
+    print("Evaluation - Val. Loss: {total_loss:.5f} - PRAUC: {ap:.4f} - ROCAUC: {roc_auc:.4f}".format(total_loss=total_loss/n_entries, ap=ap, roc_auc=roc_auc))
+    
+    return y_trues, y_preds, total_loss/n_entries, ap, roc_auc
 ##########
 
 # =========================================================================#
@@ -148,8 +195,8 @@ def main(num_rounds, num_chunks, learning_rate=1e-4, weight_decay=0, batch_size=
     tqdm.write("Done!\n")
     
     num_epochs = num_rounds # 10
-
-    pos_weight = torch.tensor([61], device=gpu_id) # mean ratio of neg. samples / pos. samples in all chunks of code15 to tackle class imbalance (only around 2% are positives)
+    pos_weight = torch.tensor([65], device=gpu_id) 
+    # mean ratio of neg. samples / pos. samples in all chunks of code15 to tackle class imbalance (only around 2% are positives)
     
     # =============== Define loss function ====================================#
     loss_function = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -164,7 +211,7 @@ def main(num_rounds, num_chunks, learning_rate=1e-4, weight_decay=0, batch_size=
     tqdm.write("Done!\n")
     
     # =============== Define lr scheduler =====================================#
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=1)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=2)
    
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.to(gpu_id)
@@ -178,7 +225,7 @@ def main(num_rounds, num_chunks, learning_rate=1e-4, weight_decay=0, batch_size=
     vloaders = []
     for i, filepath in enumerate(sorted(glob.glob("data/code15-12l/*.hdf5"))):
         # build data loaders
-        if filepath.replace("data/code15-12l/", "") in ["exams_part0.hdf5", "exams_part1.hdf5", "exams_part2.hdf5", "exams_part3.hdf5"]:
+        if filepath.replace("data/code15-12l/", "") in ["exams_part0.hdf5", "exams_part1.hdf5"]: #, "exams_part2.hdf5", "exams_part3.hdf5"]:
             path_to_h5_train, path_to_csv_train = filepath, 'data/code15-12l/exams.csv' # path_to_records = 'data/codesubset/RECORDS.txt'
         
             # load traces
@@ -210,7 +257,7 @@ def main(num_rounds, num_chunks, learning_rate=1e-4, weight_decay=0, batch_size=
             print("at", filepath, " >> put in validation!")
 
     vset = torch.utils.data.ConcatDataset(vloaders)
-    vloader = DataLoader(vset, batch_size=512, shuffle=False, sampler=DistributedSampler(vset))
+    vloader = DataLoader(vset, batch_size=batch_size, shuffle=False, sampler=DistributedSampler(vset))
 
     # =============== Train model =============================================#
     tqdm.write("Training...")
@@ -222,6 +269,173 @@ def main(num_rounds, num_chunks, learning_rate=1e-4, weight_decay=0, batch_size=
     lrs = []
     counter = 0
 
+    if os.path.exists("federated/new_dataset.pt"):
+        print("Dataset pre-loaded ... Loading ... ")
+        loaded_tensors = torch.load('federated/new_dataset.pt')
+        trainset = TensorDataset(*loaded_tensors)
+    else:
+        for i, filepath in enumerate(sorted(glob.glob("data/code15-12l/*.hdf5"))):
+            if filepath.replace("data/code15-12l/", "") not in ["exams_part0.hdf5", "exams_part1.hdf5"]: #, "exams_part2.hdf5", "exams_part3.hdf5"]:
+                path_to_h5_train, path_to_csv_train = filepath, 'data/code15-12l/exams.csv' 
+
+                # load traces
+                f = h5py.File(path_to_h5_train, 'r')
+                traces = torch.tensor(np.array(f['tracings'][()], dtype=np.float32), dtype=torch.float32)[:-1,:,:]
+                ids_traces = np.array(f['exam_id'])
+                #print("traces successfully converted to tensors ...")
+
+                # load labels
+                df = pd.read_csv(path_to_csv_train) # "exams.csv"
+                df = df.set_index('exam_id')
+                df = df.drop_duplicates(subset=["patient_id"], keep='last')
+                df = df.reindex(ids_traces).dropna(subset=["AF"]) # make sure the order is the same
+        
+                labels = np.array(df['age'], dtype=np.float32).reshape(-1,1)
+                traces = torch.index_select(traces, 0, torch.tensor(np.isin(ids_traces, np.array(df.index)).nonzero()[0], dtype=torch.int32))  # [:labels.shape[0],:,:]    
+    
+                if len(trains["features"]) > 0:
+                    trains["features"] = np.vstack((trains["features"], traces.detach().cpu()))
+                    trains["labels"] = np.vstack((trains["labels"], labels))
+                    print("VSTACK DONE >>", len(trains["features"]), len(trains["labels"]))
+                else:
+                    trains["features"] = traces.detach().cpu()
+                    trains["labels"] = labels
+    
+        trainset = TensorDataset(
+            torch.tensor(trains["features"], dtype=torch.float32),
+            torch.tensor(trains["labels"], dtype=torch.float32)
+        )
+ 
+        torch.save(trainset.tensors, 'federated/new_dataset.pt')
+
+    dataset, _ = random_split(trainset, [160000, int(len(trainset)-160000)])
+    tloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, sampler=DistributedSampler(dataset, shuffle=True))
+
+    snapshot_path = f"runs_centralized/{id_}-snapshot.pt"
+    for epoch in tqdm(range(1, num_epochs + 1)):
+        pos, neg = 0, 0
+        for x,y in dataset:
+            if y[0] == 0:
+                pos += 1
+            else:
+                neg += 1
+        print("Number of positive examples to negatives", pos, neg, "-->", pos/neg)
+    
+        # training loop
+        train_loss = train_loop(epoch, filepath.replace("data/code15-12l/", ""), tloader, model, optimizer, loss_function, device=gpu_id, snapshot_path=snapshot_path)
+    
+        # validation loop
+        yt, ypred, valid_loss, avg_precisions, avg_roc_aucs = eval_loop(
+            epoch, i, vloader, 
+            model, loss_function, 
+            device=gpu_id
+        )
+    
+        # collect losses
+        train_loss_all.append(train_loss)
+        valid_loss_all.append(valid_loss)
+        
+        # collect validation metrics
+        avgpreclist.append(avg_precisions)
+        rocauclist.append(avg_roc_aucs)
+    
+        # save checkpoints between epochs
+        if gpu_id == 0:
+            _save_snap(
+                model, 
+                epoch, 
+                snapshot_path=snapshot_path
+            )
+
+            pd.DataFrame({
+                "epoch": np.arange(counter+1), 
+                "train_loss": train_loss_all, 
+                "valid_loss": valid_loss_all, 
+                "mAP": avgpreclist, 
+                "ROC/AUC": rocauclist
+            }).to_csv(f"runs_centralized/{id_}-results-partwise-lr{learning_rate}-ep{num_epochs}.csv", index=False)
+    
+            # =============== PLOTTING  =============================================#
+            #print(type(yt), type(ypred), yt[:10], ypred[:10])
+            PrecisionRecallDisplay.from_predictions(yt.flatten(), ypred.flatten()) 
+            #precision, recall, thresholds = precision_recall_curve(yt, ypred)
+            #ax.fill_between() ----> uncertainties
+            plt.savefig(f"runs_centralized/{id_}-pr_curve-partwise.png", dpi=300)
+            plt.close()
+            
+            fig2 = plt.figure(figsize=(8,6), dpi=300)
+            ax2 = fig2.add_subplot()
+            ax2.set_title("Train-Validation Loss Curves - CODE-15% Centralized Training")
+            ax2.set_xlabel("Iterations")
+            ax2.set_ylabel("BCE Loss")
+            ax2.plot(np.arange(counter+1), train_loss_all, color="blue", label="Train")
+            ax2.plot(np.arange(counter+1), valid_loss_all, color="orange", label="Validation")
+            ax2.legend(loc="best")
+            fig2.tight_layout()
+            fig2.savefig(f"runs_centralized/{id_}-losses-partwise-centralizedcode15.png")
+            plt.close()
+    
+            RocCurveDisplay.from_predictions(yt.flatten(), ypred.flatten())
+            plt.savefig(f"runs_centralized/{id_}-roc_curve-partwise.png", dpi=300)
+            plt.close()
+        
+            fig = plt.figure(figsize=(8,6), dpi=300)
+            ax = fig.add_subplot()
+            ax.set_title("PR-AUC and ROC-AUC - CODE-15% Centralized Training")
+            ax.set_xlabel("Iterations")
+            ax.set_ylabel("Average Precision")
+            ax.plot(np.arange(counter+1), avgpreclist, color="blue", label="PR-AUC")
+            ax.plot(np.arange(counter+1), rocauclist, color="orange", label="ROC/AUC")
+            ax.legend(loc="best")
+            fig.tight_layout()
+            fig.savefig(f"runs_centralized/{id_}-pr+roc_aucs-partwise-centralizedcode15.png") 
+            plt.close()
+    
+            # save best model: here we save the model only for the lowest validation loss
+            if valid_loss < best_loss:
+                # Save model parameters
+                torch.save({'model': model.state_dict()}, f'runs_centralized/{id_}-resnetmodel-centralizedcode15-partwise.pt')
+                # Update best validation loss
+                best_loss = valid_loss        
+    
+        counter += 1
+    
+        # statement
+        model_save_state = "best model -> saved" if valid_loss < best_loss else ""
+        
+        # Update learning rate with lr-scheduler
+        if lr_scheduler and gpu_id == 0:
+            print("lr >>>>", optimizer.param_groups[0]['lr'])
+            lrs.append(optimizer.param_groups[0]['lr'])
+            
+            # Print message
+            tqdm.write('Epoch {epoch:2d}: \t'
+                    'Train Loss {train_loss:.6f} \t'
+                    'Valid Loss {valid_loss:.6f} \t'
+                    '{model_save}'
+                    .format(epoch=epoch,
+                            train_loss=train_loss,
+                            valid_loss=valid_loss,
+                            model_save=model_save_state))
+            
+            fig2 = plt.figure(figsize=(8,6), dpi=300)
+            ax2 = fig2.add_subplot()
+            ax2.set_title("LR Scheduling - Centralized CODE-15%")
+            ax2.set_xlabel("Iterations")
+            ax2.set_ylabel("Learning Rate")
+            ax2.plot(np.arange(counter), lrs, color="blue")
+            ax2.grid(True)
+            fig2.tight_layout()
+            fig2.savefig(f"runs_centralized/{id_}-lrscheduling-centralizedcode15.png")
+            plt.close()
+            lr_scheduler.step(valid_loss_all[-1])
+            
+            if lrs[-1] <= 1e-7:
+                sys.exit(0)
+                    
+    destroy_process_group()
+    
+    """
     size = len(train_files_list) if num_chunks == -1 else num_chunks
     snapshot_path = f"runs_centralized/{id_}-snapshot.pt"
 
@@ -383,7 +597,8 @@ def main(num_rounds, num_chunks, learning_rate=1e-4, weight_decay=0, batch_size=
                     
     destroy_process_group()
     # =======================================================================#
-
+"""
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-lr", "--learning_rate", type=float, default=1e-4)

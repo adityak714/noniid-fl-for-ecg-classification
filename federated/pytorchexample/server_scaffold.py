@@ -3,7 +3,7 @@
 from logging import DEBUG, INFO
 from typing import Callable, Dict, List, Optional, OrderedDict, Tuple, Union
 
-import torch
+import torch, numpy as np
 from flwr.common import (
     Code,
     FitIns,
@@ -48,6 +48,8 @@ class ScaffoldStrategy(FedAvg):
         if not self.accept_failures and failures:
             return None, {}
 
+        ### TODO: Partial C
+        
         combined_parameters_all_updates = [
             parameters_to_ndarrays(fit_res.parameters) for _, fit_res in results
         ]
@@ -61,7 +63,12 @@ class ScaffoldStrategy(FedAvg):
             )
         ]
         # Aggregate parameters
+        """
         parameters_aggregated = aggregate(weights_results)
+        """
+        param_updates = [update[0] for update in weights_results]
+        parameters_aggregated = [np.mean(layer, axis=0) for layer in zip(*param_updates)]
+
 
         # Zip client_cv_updates and num_examples
         client_cv_updates_and_num_examples = [
@@ -70,7 +77,11 @@ class ScaffoldStrategy(FedAvg):
                 combined_parameters_all_updates, num_examples_all_updates
             )
         ]
+        """
         aggregated_cv_update = aggregate(client_cv_updates_and_num_examples)
+        """
+        cv_updates = [update[0] for update in client_cv_updates_and_num_examples]
+        aggregated_cv_update = [np.mean(layer, axis=0) for layer in zip(*cv_updates)]
 
         # Aggregate custom metrics if aggregation fn was provided
         metrics_aggregated = {}
@@ -93,12 +104,14 @@ class ScaffoldServer(Server):
         strategy: Strategy,
         model,
         client_manager: Optional[ClientManager] = None,
+        global_lr: float = 1.0
     ):
         if client_manager is None:
             client_manager = SimpleClientManager()
         super().__init__(client_manager=client_manager, strategy=strategy)
         self.model_params = ResNet1d(n_classes=1)
         self.server_cv: List[torch.Tensor] = []
+        self.global_lr = global_lr # new - for modifying a global learning rate
 
     def _get_initial_parameters(self, server_round: int, timeout: Optional[float]) -> Parameters:
         """Get initial parameters from one of the available clients."""
@@ -203,10 +216,10 @@ class ScaffoldServer(Server):
             for i, cv in enumerate(server_cv_np)
         ]
 
-        # update parameters x = x + 1* aggregated_update
+        # update parameters x = x + global_lr* aggregated_update
         curr_params = parameters_to_ndarrays(self.parameters)
         updated_params = [
-            x + aggregated_parameters[i] for i, x in enumerate(curr_params)
+            x + (self.global_lr*aggregated_parameters[i]) for i, x in enumerate(curr_params)
         ]
         parameters_updated = ndarrays_to_parameters(updated_params)
 

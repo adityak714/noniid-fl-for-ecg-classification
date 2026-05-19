@@ -26,16 +26,17 @@ def main() -> None:
     """Main entry point for the ServerApp."""
     # Read run config
     num_partitions: int = 10 #context.run_config["num-partitions"]
+    num_rounds: int = 60 #context.run_config["num-server-rounds"]
+    fraction_fit: float = 1.0 #context.run_config["fraction-fit"]
     fraction_evaluate: float = 0.5 #context.run_config["fraction-evaluate"]
-    num_rounds: int = 20 #context.run_config["num-server-rounds"]
     lr: float = 0.0001 #context.run_config["learning-rate"]
     batch_size: int = 256 #context.run_config["batch-size"]
     stratname = "scaffold" #context.run_config["strategy"]
     val = 0.25 #context.run_config["val"] # alpha value for dirichl-based partitioning
-    local_epochs: int = 1 #context.run_config["local-epochs"]
+    local_epochs: int = 2 #context.run_config["local-epochs"]
     
     os.environ["CURR_FLWR_SESSION_ID"] = unique_id
-    with open(f"tmp-tester-scaffold.txt", 'w') as f:
+    with open(f"tmp-tester-scaffold-uniformavg-fix-server.txt", 'w') as f:
         print("CURR_FLWR_SESSION_ID set as", os.environ["CURR_FLWR_SESSION_ID"])
         filetree = f"./runs/{today}-{unique_id}"
         f.write(filetree)
@@ -47,7 +48,7 @@ def main() -> None:
     global_model = ResNet1d(n_classes=1)
     arrays = ArrayRecord(global_model.state_dict())
 
-    client_cv_dir = None
+    client_cv_dir = ""
     strategy = None
 
     # Initialize FedPROX strategy (before: FEDAVG)
@@ -65,18 +66,16 @@ def main() -> None:
         pass
 
     if stratname == 'scaffold':
-        #evaluate_fn = global_evaluate(
-        #    server_round=1,
-        #    arrays=arrays
-        #)
         strategy = ScaffoldStrategy(
+            fraction_fit=fraction_fit,
             fraction_evaluate=fraction_evaluate,
             evaluate_fn=scaffold_global_evaluate
         )
         server = ScaffoldServer(
             strategy=strategy, 
             model=arrays, 
-            client_manager=SimpleClientManager()
+            client_manager=SimpleClientManager(),
+            global_lr=1.0
         )
         client_fn = gen_client_fn(
             arrays,
@@ -92,7 +91,7 @@ def main() -> None:
             num_clients=num_partitions,
             config=flwr.server.ServerConfig(num_rounds=num_rounds),
             client_resources={
-                "num_cpus": 64,
+                "num_cpus": 16,
                 "num_gpus": 1.0,
             },
             strategy=strategy,
@@ -118,7 +117,7 @@ def scaffold_global_evaluate(server_round: int, parameters, config):
     model.to(device)
 
     test_dataloader = load_centralized_dataset()
-    loss, acc = test(model, test_dataloader, device)
+    test_loss, test_acc = test(model, test_dataloader, device)
 
     model.eval()
     scores = {}
@@ -154,7 +153,7 @@ def scaffold_global_evaluate(server_round: int, parameters, config):
     with open(f'runs/{today}-{unique_id}/serveragg-metrics.txt', 'a') as f:
         f.write(f"{dict(record)}\n") 
     
-    return float(loss), {"accuracy": float(acc)}
+    return float(test_loss), {"accuracy": float(test_acc)}
 
 def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
     """Evaluate model on central data."""
