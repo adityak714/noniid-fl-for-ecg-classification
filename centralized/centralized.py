@@ -12,7 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from sklearn.metrics import roc_auc_score, average_precision_score, PrecisionRecallDisplay, RocCurveDisplay
 from torch.distributed import init_process_group, destroy_process_group
-from resnet import ResNet1d
+from centralized.resnet import ResNet1d
 
 ########## set device (torchrun parallellization)
 def ddp_setup():
